@@ -34,7 +34,7 @@
 #include <Keyboard.h>  // HID keyboard library for Arduino R4
 #include <math.h>
 
-#define DEBUG  // Uncomment this line to enable debugging
+// #define DEBUG  // Uncomment this line to enable debugging
 
 // ----------------- USER CONFIGURATION -----------------
 #define SAMPLE_RATE       512          // samples per second
@@ -47,8 +47,8 @@
 #define ENVELOPE_WINDOW_SIZE ((ENVELOPE_WINDOW_MS * SAMPLE_RATE) / 1000)
 
 // Blink Detection Thresholds - adjust these based on your setup
-const float BlinkLowerThreshold = 30.0;
-const float BlinkUpperThreshold = 50.0;
+const int BlinkLowerThreshold = 30; 
+const int BlinkUpperThreshold = 50;
 
 // Circular buffer for timing-based sampling
 #define BUFFER_SIZE 64
@@ -74,6 +74,15 @@ float eogEnvelopeSum = 0;
 // Game Statistics
 unsigned long totalBlinks = 0;
 unsigned long gameStartTime = 0;
+
+// EOG Statistics for debug display
+#define SEGMENT_SEC 1
+#define SAMPLES_PER_SEGMENT (SAMPLE_RATE * SEGMENT_SEC)
+float eogBuffer[SAMPLES_PER_SEGMENT] = {0};
+uint16_t segmentIndex = 0;
+unsigned long lastSegmentTimeMs = 0;
+float eogAvg = 0, eogMin = 0, eogMax = 0;
+bool segmentStatsReady = false;
 
 // --- Filter Functions ---
 
@@ -142,9 +151,7 @@ void sendSpaceBar() {
     totalBlinks++;
     
     Serial.print("JUMP! Blink #");
-    Serial.print(totalBlinks);
-    Serial.print(" | EOG: ");
-    Serial.println(currentEOGEnvelope);
+    Serial.println(totalBlinks);
     
     // LED feedback - quick single flash
     digitalWrite(LED_PIN, HIGH);
@@ -155,7 +162,7 @@ void sendSpaceBar() {
 
 void setup() {
   Serial.begin(BAUD_RATE);
-  while (!Serial);
+  delay(100);
   
   pinMode(INPUT_PIN, INPUT);
   pinMode(LED_PIN, OUTPUT);
@@ -172,6 +179,7 @@ void setup() {
   }
   
   gameStartTime = millis();
+  lastSegmentTimeMs = millis();  // Initialize the segment timer
   
   Serial.println("=================================");
   Serial.println("Arduino R4 EOG Dino Game Controller");
@@ -197,24 +205,20 @@ void loop() {
     
     // Timing-based sampling for 512 Hz
     unsigned long currentMicros = micros();
-    unsigned long interval = currentMicros - lastMicros;
+    long interval = (long)(currentMicros - lastMicros);
     lastMicros = currentMicros;
     
     timer -= interval;
-    if (timer < 0) {
-        timer += 1000000 / SAMPLE_RATE; // 1,000,000 / 512 ≈ 1953 microseconds
-        
-        // Sample and filter for EOG
+    const long period = 1000000L / SAMPLE_RATE;
+    while (timer < 0) {
+        timer += period;
         int raw = analogRead(INPUT_PIN);
         float filtered = Notch(raw);
         float eog = EOGFilter(filtered);
-        
-        // Store in circular buffer
         eogCircBuffer[writeIndex] = eog;
         writeIndex = (writeIndex + 1) % BUFFER_SIZE;
-        samplesAvailable++;
-        if (samplesAvailable > BUFFER_SIZE) {
-            samplesAvailable = BUFFER_SIZE; // Prevent overflow
+        if (samplesAvailable < BUFFER_SIZE) {
+            samplesAvailable++;
         }
     }
     
@@ -226,10 +230,41 @@ void loop() {
         
         // Process the sample (envelope calculation)
         currentEOGEnvelope = updateEOGEnvelope(eog);
+        
+        // Add to segment buffer for statistics
+        if(segmentIndex < SAMPLES_PER_SEGMENT) {
+            eogBuffer[segmentIndex] = currentEOGEnvelope;
+            segmentIndex++;
+        }
     }
     
     // Get current time for blink detection logic
     unsigned long nowMs = millis();
+    
+    // ===== SEGMENT STATISTICS PROCESSING =====
+    if ((nowMs - lastSegmentTimeMs) >= (1000UL * SEGMENT_SEC)) {
+        if(segmentIndex > 0) {
+            // Compute min/max/avg for the completed segment
+            eogMin = eogBuffer[0]; 
+            eogMax = eogBuffer[0];  
+            float eogSum = 0;
+            
+            for (uint16_t i = 0; i < segmentIndex; i++) {
+                float eogVal = eogBuffer[i];
+                
+                // EOG statistics
+                if (eogVal < eogMin) eogMin = eogVal;
+                if (eogVal > eogMax) eogMax = eogVal;
+                eogSum += eogVal;
+            }
+            
+            eogAvg = eogSum / segmentIndex;
+            segmentStatsReady = true;
+        }
+        
+        lastSegmentTimeMs = nowMs;
+        segmentIndex = 0;
+    }
     
     // ===== SINGLE BLINK DETECTION AND SPACE BAR CONTROL =====
     if (currentEOGEnvelope > BlinkLowerThreshold && 
@@ -239,11 +274,7 @@ void loop() {
         lastBlinkTime = nowMs;
         
         #ifdef DEBUG
-        Serial.print("Blink detected! EOG Envelope: ");
-        Serial.print(currentEOGEnvelope);
-        Serial.print(" | Time since last: ");
-        Serial.print(nowMs - lastBlinkTime + BLINK_DEBOUNCE_MS);
-        Serial.println(" ms");
+        Serial.println("Blink detected!");
         #endif
         
         // Send space bar immediately for single blink
@@ -277,15 +308,14 @@ void loop() {
     // ===== REAL-TIME EOG MONITORING (DEBUG) =====
     #ifdef DEBUG
     static unsigned long lastDebugPrint = 0;
-    if ((nowMs - lastDebugPrint) >= 2000) {  // Every 2 seconds
-        Serial.print("EOG Monitor: ");
-        Serial.print(currentEOGEnvelope);
-        Serial.print(" | Threshold: ");
-        Serial.print(BlinkLowerThreshold);
-        Serial.print("-");
-        Serial.print(BlinkUpperThreshold);
-        Serial.print(" | Jumps: ");
-        Serial.println(totalBlinks);
+    if ((nowMs - lastDebugPrint) >= 1000) {  // Every 1 second
+        if (segmentStatsReady) {
+            Serial.print("EOG: (Avg: "); Serial.print(eogAvg);
+            Serial.print(", Min: "); Serial.print(eogMin);
+            Serial.print(", Max: "); Serial.print(eogMax); Serial.println(")");
+        } else {
+            Serial.println("EOG: "); Serial.print(currentEOGEnvelope);
+        }
         lastDebugPrint = nowMs;
     }
     #endif

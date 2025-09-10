@@ -76,6 +76,15 @@ float eogEnvelopeBuffer[ENVELOPE_WINDOW_SIZE] = {0};
 int eogEnvelopeIndex = 0;
 float eogEnvelopeSum = 0;
 
+// EOG Statistics for debug display
+#define SEGMENT_SEC 1
+#define SAMPLES_PER_SEGMENT (SAMPLE_RATE * SEGMENT_SEC)
+float eogBuffer[SAMPLES_PER_SEGMENT] = {0};
+uint16_t segmentIndex = 0;
+unsigned long lastSegmentTimeMs = 0;
+float eogAvg = 0, eogMin = 0, eogMax = 0;
+bool segmentStatsReady = false;
+
 // --- Filter Functions ---
 
 // Band-Stop Butterworth IIR digital filter, generated using filter_gen.py.
@@ -181,7 +190,7 @@ void sendPreviousSlide() {
 
 void setup() {
   Serial.begin(BAUD_RATE);
-  while (!Serial);
+  delay(100);
   
   pinMode(INPUT_PIN, INPUT);
   pinMode(LED_PIN, OUTPUT);
@@ -198,6 +207,8 @@ void setup() {
   delay(300);
   digitalWrite(LED_PIN, LOW);
   
+  lastSegmentTimeMs = millis();  // Initialize the segment timer
+  
   Serial.println("Arduino R4 Slide Controller Ready!");
   Serial.println("Double Blink = Next Slide");
   Serial.println("Triple Blink = Previous Slide");
@@ -212,24 +223,20 @@ void loop() {
     
     // Timing-based sampling for 512 Hz
     unsigned long currentMicros = micros();
-    unsigned long interval = currentMicros - lastMicros;
+    long interval = (long)(currentMicros - lastMicros);
     lastMicros = currentMicros;
     
     timer -= interval;
-    if (timer < 0) {
-        timer += 1000000 / SAMPLE_RATE; // 1,000,000 / 512 ≈ 1953 microseconds
-        
-        // Sample and filter for EOG
+    const long period = 1000000L / SAMPLE_RATE;
+    while (timer < 0) {
+        timer += period;
         int raw = analogRead(INPUT_PIN);
         float filtered = Notch(raw);
         float eog = EOGFilter(filtered);
-        
-        // Store in circular buffer
         eogCircBuffer[writeIndex] = eog;
         writeIndex = (writeIndex + 1) % BUFFER_SIZE;
-        samplesAvailable++;
-        if (samplesAvailable > BUFFER_SIZE) {
-            samplesAvailable = BUFFER_SIZE; // Prevent overflow
+        if (samplesAvailable < BUFFER_SIZE) {
+            samplesAvailable++;
         }
     }
     
@@ -241,10 +248,41 @@ void loop() {
         
         // Process the sample (envelope calculation)
         currentEOGEnvelope = updateEOGEnvelope(eog);
+        
+        // Add to segment buffer for statistics
+        if(segmentIndex < SAMPLES_PER_SEGMENT) {
+            eogBuffer[segmentIndex] = currentEOGEnvelope;
+            segmentIndex++;
+        }
     }
     
     // Get current time for blink detection logic
     unsigned long nowMs = millis();
+    
+    // ===== SEGMENT STATISTICS PROCESSING =====
+    if ((nowMs - lastSegmentTimeMs) >= (1000UL * SEGMENT_SEC)) {
+        if(segmentIndex > 0) {
+            // Compute min/max/avg for the completed segment
+            eogMin = eogBuffer[0]; 
+            eogMax = eogBuffer[0];  
+            float eogSum = 0;
+            
+            for (uint16_t i = 0; i < segmentIndex; i++) {
+                float eogVal = eogBuffer[i];
+                
+                // EOG statistics
+                if (eogVal < eogMin) eogMin = eogVal;
+                if (eogVal > eogMax) eogMax = eogVal;
+                eogSum += eogVal;
+            }
+            
+            eogAvg = eogSum / segmentIndex;
+            segmentStatsReady = true;
+        }
+        
+        lastSegmentTimeMs = nowMs;
+        segmentIndex = 0;
+    }
     
     // ===== BLINK DETECTION AND HID CONTROL =====
     if (currentEOGEnvelope > BlinkLowerThreshold && 
@@ -253,26 +291,15 @@ void loop() {
         
         lastBlinkTime = nowMs;
         
-        #ifdef DEBUG
-        Serial.print("Blink detected! EOG Envelope: ");
-        Serial.println(currentEOGEnvelope);
-        #endif
-        
         if (blinkCount == 0) {
             // First blink of sequence
             firstBlinkTime = nowMs;
             blinkCount = 1;
-            #ifdef DEBUG
-            Serial.println("First blink detected");
-            #endif
         }
         else if (blinkCount == 1 && (nowMs - firstBlinkTime) <= DOUBLE_BLINK_MS) {
             // Second blink within time window
             secondBlinkTime = nowMs;
             blinkCount = 2;
-            #ifdef DEBUG
-            Serial.println("Second blink registered, waiting for potential triple...");
-            #endif
         }
         else if (blinkCount == 2 && (nowMs - secondBlinkTime) <= TRIPLE_BLINK_MS) {
             // Triple blink detected - Previous Slide
@@ -284,9 +311,6 @@ void loop() {
             // Either too late or extra blink - restart sequence
             firstBlinkTime = nowMs;
             blinkCount = 1;
-            #ifdef DEBUG
-            Serial.println("Blink sequence restarted");
-            #endif
         }
     }
     
@@ -301,17 +325,19 @@ void loop() {
     // If we never got the second blink in time, reset
     if (blinkCount == 1 && (nowMs - firstBlinkTime) > DOUBLE_BLINK_MS) {
         blinkCount = 0;
-        #ifdef DEBUG
-        Serial.println("Single blink timeout - resetting");
-        #endif
     }
     
     // Optional: Print EOG envelope value for debugging/calibration
     #ifdef DEBUG
     static unsigned long lastDebugPrint = 0;
-    if ((nowMs - lastDebugPrint) >= 1000) {  // Print every second
-        Serial.print("Current EOG Envelope: ");
-        Serial.println(currentEOGEnvelope);
+    if ((nowMs - lastDebugPrint) >= 1000) {  // Every 1 second
+        if (segmentStatsReady) {
+            Serial.print("EOG: (Avg: "); Serial.print(eogAvg);
+            Serial.print(", Min: "); Serial.print(eogMin);
+            Serial.print(", Max: "); Serial.print(eogMax); Serial.println(")");
+        } else {
+            Serial.println("EOG: "); Serial.print(currentEOGEnvelope);
+        }
         lastDebugPrint = nowMs;
     }
     #endif
