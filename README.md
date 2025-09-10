@@ -11,6 +11,10 @@ Firmware for Eye BioAmp hardware from Upside Down Labs
 |5 | [EyeBlinkDetection](5_EyeBlinkDetection)| EOG based eye blink detection.|
 |6 | [EOGDinoGame](6_EOGDinoGame)| Controlling chrome dino game using eye blinks.|
 |7 | [EOGServoControl](7_EOGServoControl)| Controlling 3D printed servo claw using eye blinks.|
+|8 | [VerticalEyeMovementDetector](8_VerticalEyeMovementDetector)| Detect vertical eye movements using EOG signals.|
+|9 | [EOGServoR4](9_EOGServoR4)| Servo claw control using EOG blinks for Arduino UNO R4.|
+|10 | [EOGDinoR4](10_EOGDinoR4)| Chrome Dino game control using EOG blinks for Arduino UNO R4.|
+|11 | [EOGSlidesControl](11_EOGSlidesControl)| Presentation slide control using double/triple EOG blinks.|
 
 Compatibility of various boards with Brain-BioAmp sensors
 <table>
