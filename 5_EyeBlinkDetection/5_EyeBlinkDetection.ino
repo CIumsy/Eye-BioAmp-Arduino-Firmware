@@ -82,6 +82,7 @@ bool Getpeak(float new_sample) {
 	static float data_buffer[DATA_LENGTH];
 	static float mean_buffer[DATA_LENGTH];
 	static float standard_deviation_buffer[DATA_LENGTH];
+	float standard_deviation=0.0;
   
 	// Check for peak
 	if (new_sample - mean_buffer[data_index] > (DATA_LENGTH * 1.2) * standard_deviation_buffer[data_index]) {
